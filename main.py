@@ -1,77 +1,97 @@
 from docx import Document
 from transliterate import translit
 import pandas as pd
-import editdistance
+from fuzzywuzzy import fuzz
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
-
-# Read exel file & word file
+# reading files
 doc = Document("list_files_2.docx")
-list_files = [para.text for para in doc.paragraphs]
+list_files = [para.text for para in doc.paragraphs if '.' in para.text.split('\\')[-1]]
 
-df = pd.read_excel("bazaIDCulture.xlsx")
+df = pd.read_excel("BazaIDCulture.xlsx", engine='openpyxl')
 df["Project_name"] = df["Project_name"].fillna('').astype(str)
+df["Author"] = df["Author"].fillna('').astype(str)
 
-
-# cleaned names files & show
+# cleaned names
 def brus_cleaned(name):
+    transliterated_name = translit(name, 'uk', reversed=True)
     replacements = {
         ';': '', ':': '', '"': '', "'": '', '-': '', ')': '', '(': '', ',': '', '.': '', '!': '', '?': '', '_': '',
         ' ': '', '„': '', '”': '', '’': '', 'persha': '1', 'druga': '2', 'tretja': '3', 'chetverta': '4', 'pjata': '5',
         'pyata': '5', 'shosta': '6', 'sioma': '7', 'soma': '7', 'vosma': '8', 'devyata': '9', 'desyata': '10',
-        'chast': 'ch', 'chastyna': 'ch'
+        'chast': 'ch', 'chastyna': 'ch',
     }
     for key, value in replacements.items():
-        name = name.replace(key, value)
-    return name.lower()
+        transliterated_name = transliterated_name.replace(key, value)
+    return transliterated_name.lower()
 
 
-def cleaned_tv_show_name(show_name):
-    transliterated_name = translit(show_name, 'uk', reversed=True)
-    normalized_name = brus_cleaned(transliterated_name)
-    return normalized_name
-
-
-def cleaned_file_name(file_name):
-    parts = file_name.split('\\')
+def mining_file_name(file_path):
+    parts = file_path.split('\\')
+    clean_folder = brus_cleaned(parts[2]) if len(parts) > 3 else None
     last_part = parts[-1]
     if '.' in last_part:
         name = last_part.split('.')[0]
     else:
         name = last_part
-    transliterated_name = translit(name, 'uk', reversed=True)
-    normalized_name = transliterated_name.replace('?', 'i').replace('_', ' ')
-    clean_file_name = brus_cleaned(normalized_name)
-    return clean_file_name.lower()
+    clean_file_name = brus_cleaned(name)
+    return clean_folder, clean_file_name, file_path
+
+preprocessed_files = [mining_file_name(file) for file in list_files]
 
 
-clean_files = {file_name: cleaned_file_name(file_name) for file_name in list_files}
-count = 0
-
-# founder match
-for index, row in df.iloc[:7050].iterrows():
-    program_name_ukr = row["Project_name"]
-    clean_tv_show_name = cleaned_tv_show_name(program_name_ukr)
+# founded match
+def find_best_match(index, row):
+    program_name = row["Project_name"]
+    author = row["Author"]
+    clean_program_name = brus_cleaned(program_name)
+    clean_author = brus_cleaned(author)
 
     best_dist = 0
     best_name = ""
-    for file_name, clean_file_name in clean_files.items():
+    best_match_author = 0
 
-        cur_distance = editdistance.eval(clean_tv_show_name, clean_file_name)
-        norm_distance = round(1 - (cur_distance / max(len(clean_tv_show_name), len(clean_file_name))), 3)
-        if norm_distance > best_dist:
-            best_dist = norm_distance
-            best_name = file_name
+    for folder, file_name, full_path in preprocessed_files:
+        cur_distance = fuzz.ratio(clean_program_name, file_name) / 100.0
+        match_author = fuzz.ratio(clean_author, folder) / 100.0
 
-    if best_dist >= 0.70:
-        df.at[index, 'appropriate_file_name'] = best_name
-#        print(f"find for {best_name}")
-    else:
-        df.at[index, 'appropriate_file_name'] = "dl found nothing"
+        if cur_distance > best_dist:
+            best_dist = cur_distance
+            best_name = full_path
+            best_match_author = match_author
+        elif 0.7 <= cur_distance < 0.98:
+            if match_author > 0.9 and cur_distance > 0.7:
+                best_dist = cur_distance
+                best_name = full_path
+                best_match_author = match_author
+
+    # Повертати значення залежно від умов
+    if best_dist >= 0.98:
+        return index, best_name, best_dist
+    elif 0.7 <= best_dist < 0.98 and best_match_author > 0.9:
+        return index, best_name, best_dist
+    return index, "dl found nothing", best_dist
+
+
+# executing
+results = []
+count = 0
+total_rows = len(df)
+
+with ThreadPoolExecutor() as executor:
+    futures = [executor.submit(find_best_match, index, row) for index, row in df.iterrows()]
+    for future in as_completed(futures):
+        result = future.result()
+        results.append(result)
+
+        # Прогрес
+        count += 1
+        if count % 100 == 0:
+            print(f"{count / total_rows:.2%} complete")
+
+# create result file
+for index, best_name, best_dist in results:
+    df.at[index, 'appropriate_file_name'] = best_name
     df.at[index, 'probability'] = best_dist
 
-# progress
-    count += 1
-    print(f"{count/7050:.2%} complete")
-
-# Save result to Excel
-df.to_excel("bazaIDCulture_updated.xlsx", index=False)
+df.to_excel("bazaIDCulture_updated9.xlsx", index=False)
