@@ -1,3 +1,4 @@
+import re
 from docx import Document
 from transliterate import translit
 import pandas as pd
@@ -15,14 +16,29 @@ df["Author"] = df["Author"].fillna('').astype(str)
 # cleaned names
 def brus_cleaned(name):
     transliterated_name = translit(name, 'uk', reversed=True)
+
     replacements = {
         ';': '', ':': '', '"': '', "'": '', '-': '', ')': '', '(': '', ',': '', '.': '', '!': '', '?': '', '_': '',
         ' ': '', '„': '', '”': '', '’': '', 'persha': '1', 'druga': '2', 'tretja': '3', 'chetverta': '4', 'pjata': '5',
         'pyata': '5', 'shosta': '6', 'sioma': '7', 'soma': '7', 'vosma': '8', 'devyata': '9', 'desyata': '10',
         'chast': 'ch', 'chastyna': 'ch',
     }
+
     for key, value in replacements.items():
         transliterated_name = transliterated_name.replace(key, value)
+
+    chastyna = re.findall(r".*(\d+chastyna).*", transliterated_name)
+    if len(chastyna) > 0:
+        chastyna = chastyna[0]
+        ch = 'ch' + chastyna[0:-8]
+        transliterated_name = transliterated_name.replace(chastyna, ch)
+
+    chastyna2 = re.findall(r".*(\d+ch).*", transliterated_name)
+    if len(chastyna2) > 0:
+        chastyna2 = chastyna2[0]
+        ch = 'ch' + chastyna2[0:-2]
+        transliterated_name = transliterated_name.replace(chastyna2, ch)
+
     return transliterated_name.lower()
 
 
@@ -36,6 +52,7 @@ def mining_file_name(file_path):
         name = last_part
     clean_file_name = brus_cleaned(name)
     return clean_folder, clean_file_name, file_path
+
 
 preprocessed_files = [mining_file_name(file) for file in list_files]
 
@@ -65,7 +82,6 @@ def find_best_match(index, row):
                 best_name = full_path
                 best_match_author = match_author
 
-    # Повертати значення залежно від умов
     if best_dist >= 0.98:
         return index, best_name, best_dist
     elif 0.7 <= best_dist < 0.98 and best_match_author > 0.9:
@@ -84,7 +100,7 @@ with ThreadPoolExecutor() as executor:
         result = future.result()
         results.append(result)
 
-        # Прогрес
+        # progress
         count += 1
         if count % 100 == 0:
             print(f"{count / total_rows:.2%} complete")
@@ -94,4 +110,4 @@ for index, best_name, best_dist in results:
     df.at[index, 'appropriate_file_name'] = best_name
     df.at[index, 'probability'] = best_dist
 
-df.to_excel("bazaIDCulture_updated9.xlsx", index=False)
+df.to_excel("bazaIDCulture_updated11.xlsx", index=False)
